@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Smart Face & Voice — Capture + Base64 Debug</title>
+<style>
+  :root{--bg:#071023;--card:#0e2436;--muted:#9ab;--accent:#3fb0ff;--success:#2ecc71;--danger:#ff6b6b}
+  body{background:linear-gradient(180deg,#041022 0%,#071023 100%);color:#dbeefd;font-family:Inter,Segoe UI,Arial;margin:0; padding:24px}
+  .wrap{max-width:1100px;margin:0 auto;display:grid;grid-template-columns:1fr 360px;gap:20px}
+  .card{background:var(--card);border-radius:12px;padding:18px;box-shadow:0 8px 30px rgba(0,0,0,.6)}
+  h1{margin:0 0 10px;font-size:20px}
+  label{display:block;font-size:13px;color:var(--muted);margin:8px 0 6px}
+  input[type=text]{width:100%;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,.04);background:transparent;color:inherit}
+  video,canvas{width:100%;border-radius:10px;background:#000}
+  .controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  button{background:var(--accent);border:none;padding:8px 12px;border-radius:8px;color:#022b3a;font-weight:600;cursor:pointer}
+  button.ghost{background:transparent;border:1px solid rgba(255,255,255,.06);color:var(--muted)}
+  .small{padding:6px 10px;font-size:14px}
+  .status{background:#031a28;padding:12px;border-radius:8px;margin-top:12px;color:var(--muted);font-size:13px;white-space:pre-wrap}
+  .preview{display:flex;flex-direction:column;gap:8px}
+  .row{display:flex;gap:8px;align-items:center}
+  .debug{background:#020e14;padding:12px;border-radius:8px;margin-top:10px;color:#9fc9ff;font-family:monospace;font-size:12px;max-height:320px;overflow:auto;white-space:pre-wrap}
+  .toggle{background:transparent;border:1px dashed rgba(255,255,255,.06);padding:6px;border-radius:6px;color:var(--muted);cursor:pointer}
+  .muted{color:var(--muted);font-size:13px}
+  .success{color:var(--success)}
+  .danger{color:var(--danger)}
+  footer{grid-column:1/-1;margin-top:18px;color:var(--muted);font-size:13px;text-align:center}
+  @media (max-width:960px){.wrap{grid-template-columns:1fr; padding:0 10px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>Smart Face & Voice — Capture</h1>
+
+    <label>Camera preview</label>
+    <video id="video" autoplay playsinline muted></video>
+
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button id="btnStartCam" class="small">Start Camera</button>
+      <button id="btnStopCam" class="small ghost">Stop Camera</button>
+      <button id="btnCapture" class="small">Preview Capture</button>
+      <button id="btnCaptureEnroll" class="small" title="Capture & Enroll">Capture & Enroll</button>
+    </div>
+
+    <div style="margin-top:12px">
+      <label>Audio recorder (2s)</label>
+      <div class="row">
+        <button id="btnRecord" class="small">Record 2s</button>
+        <button id="btnStopRec" class="small ghost">Stop</button>
+        <div id="recStatus" class="muted" style="margin-left:8px">idle</div>
+      </div>
+      <audio id="audioPlayback" controls style="width:100%;margin-top:8px;display:none"></audio>
+    </div>
+
+    <div style="margin-top:12px" class="preview">
+      <label>Captured image preview</label>
+      <canvas id="canvas" style="display:block;width:100%;height:auto;border-radius:8px"></canvas>
+      <div class="controls">
+        <button id="btnSendEnroll" class="small">Send Enroll (POST)</button>
+        <button id="btnSendAttend" class="small">Send Attend (POST)</button>
+        <button id="btnClear" class="small ghost">Clear Preview</button>
+      </div>
+    </div>
+
+    <div class="status" id="statusBox">Ready</div>
+  </div>
+
+  <div class="card">
+    <h1>Inputs & Debug</h1>
+
+    <label>Student Roll</label>
+    <input id="inputRoll" type="text" value="25k91a05g6" />
+
+    <label>Student Name</label>
+    <input id="inputName" type="text" value="vishnuteja" />
+
+    <div style="margin-top:8px" class="row">
+      <button id="btnShowBase" class="toggle">Toggle Base64 (truncated)</button>
+      <button id="btnCopy" class="ghost small" title="Copy debug JSON">Copy JSON</button>
+    </div>
+
+    <div id="debugPanel" class="debug">
+      debug log will appear here...
+    </div>
+
+    <div style="margin-top:10px" class="muted">
+      Endpoints:
+      <div>Enroll → <code id="epEnroll">https://vishnuteja1494.app.n8n.cloud/webhook/enroll</code></div>
+      <div>Attend → <code id="epAttend">https://vishnuteja1494.app.n8n.cloud/webhook/attend</code></div>
+    </div>
+  </div>
+
+  <footer class="muted">Local capture demo. Base64 data is large — only enable full view if you need to copy it.</footer>
+</div>
+
+<script>
+/* ============= CONFIG =============
+   If you need to change endpoints, edit below.
+   (These are the webhooks you provided earlier.)
+====================================*/
+const ENROLL_URL = "https://vishnuteja1494.app.n8n.cloud/webhook/enroll";
+const ATTEND_URL = "https://vishnuteja1494.app.n8n.cloud/webhook/attend";
+/* ================================== */
+
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const audioPlayback = document.getElementById('audioPlayback');
+const statusBox = document.getElementById('statusBox');
+const debugPanel = document.getElementById('debugPanel');
+
+let stream = null;
+let mediaRecorder = null;
+let recordedChunks = [];
+let lastImageBase64 = null;
+let lastAudioBase64 = null;
+let showFullBase64 = false;
+
+/* UTILS */
+function logDebug(...args){
+  const t = new Date().toLocaleTimeString();
+  debugPanel.textContent = `[${t}] ${args.map(a=>typeof a==='string'?a:JSON.stringify(a)).join(' ')}\n\n` + debugPanel.textContent;
+}
+function setStatus(msg, cls){
+  statusBox.textContent = msg;
+  statusBox.className = msg && cls ? 'status ' + cls : 'status';
+}
+
+/* CAMERA */
+async function startCamera(){
+  stopCamera(); // safe
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({video:{width:1280}, audio:false});
+    video.srcObject = stream;
+    setStatus('Camera started', 'success');
+    logDebug('Camera started (stream active).');
+  } catch (err) {
+    setStatus('Camera error: ' + err.message, 'danger');
+    logDebug('Camera error', err.message);
+  }
+}
+function stopCamera(){
+  if(stream){
+    stream.getTracks().forEach(t=>t.stop());
+    stream = null;
+    video.srcObject = null;
+    setStatus('Camera stopped');
+    logDebug('Camera stopped.');
+  }
+}
+
+/* CAPTURE IMAGE -> base64 */
+function captureImage(){
+  if(!stream && !video.srcObject){
+    setStatus('No camera', 'danger'); logDebug('captureImage: no camera stream'); return null;
+  }
+  // set canvas size to video natural size
+  const w = video.videoWidth || 640;
+  const h = video.videoHeight || 480;
+  canvas.width = w;
+  canvas.height = h;
+  ctx.drawImage(video, 0, 0, w, h);
+  // default jpg; you can use image/png if you prefer
+  const dataURL = canvas.toDataURL('image/jpeg', 0.85);
+  const base64 = dataURL.split(',')[1];
+  lastImageBase64 = base64;
+  setStatus('Captured image (base64 length: ' + base64.length + ')');
+  logDebug('Captured image -> base64 len=' + base64.length);
+  updateDebugPanel();
+  return base64;
+}
+
+/* AUDIO RECORD -> base64 (MediaRecorder) */
+async function startRecording(durationMs = 2000){
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    setStatus('No microphone support', 'danger'); logDebug('No microphone support'); return;
+  }
+  try {
+    const audioStream = await navigator.mediaDevices.getUserMedia({audio:true, video:false});
+    recordedChunks = [];
+    mediaRecorder = new MediaRecorder(audioStream, { mimeType: 'audio/webm' });
+    mediaRecorder.ondataavailable = e => { if (e.data && e.data.size) recordedChunks.push(e.data); };
+    mediaRecorder.onstop = async () => {
+      // convert to base64
+      const blob = new Blob(recordedChunks, { type: 'audio/webm' });
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result;
+        lastAudioBase64 = dataUrl.split(',')[1];
+        audioPlayback.src = dataUrl;
+        audioPlayback.style.display = 'block';
+        setStatus('Audio recorded (base64 len: ' + lastAudioBase64.length + ')');
+        logDebug('Audio recorded -> base64 len=' + lastAudioBase64.length);
+        updateDebugPanel();
+      };
+      reader.readAsDataURL(blob);
+      // stop tracks from the mic
+      audioStream.getTracks().forEach(t => t.stop());
+    };
+    mediaRecorder.start();
+    setStatus('Recording...');
+    logDebug('MediaRecorder started');
+    // auto-stop after duration
+    setTimeout(() => {
+      if(mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
+    }, durationMs);
+  } catch (err) {
+    setStatus('Mic error: ' + err.message, 'danger');
+    logDebug('Mic error', err.message);
+  }
+}
+
+function stopRecordingImmediate(){
+  if(mediaRecorder && mediaRecorder.state === 'recording') {
+    mediaRecorder.stop();
+    setStatus('Recording stopped');
+    logDebug('Recording stopped manually');
+  }
+}
+
+/* SEND JSON to server (enroll/attend) */
+async function postTo(url, payload){
+  setStatus('Sending to ' + url + ' ...');
+  logDebug('POST -> ' + url, payload);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const text = await res.text();
+    setStatus('Response ' + res.status + ' ' + res.statusText);
+    logDebug('Response status:', res.status, text);
+    return { ok: true, status: res.status, text };
+  } catch (err) {
+    setStatus('Network error: ' + err.message, 'danger');
+    logDebug('postTo error', err.message);
+    return { ok:false, error:err.message };
+  }
+}
+
+/* BUTTON HOOKS */
+document.getElementById('btnStartCam').addEventListener('click', startCamera);
+document.getElementById('btnStopCam').addEventListener('click', stopCamera);
+
+document.getElementById('btnCapture').addEventListener('click', () => {
+  captureImage();
+});
+
+document.getElementById('btnCaptureEnroll').addEventListener('click', async () => {
+  captureImage();
+  // optionally record audio quickly if none exists
+  if(!lastAudioBase64){
+    await startRecording(2000);
+    // wait for record to finish: give small buffer
+    await new Promise(r=>setTimeout(r,2200));
+  }
+  const roll = document.getElementById('inputRoll').value.trim();
+  const name = document.getElementById('inputName').value.trim();
+  if(!roll || !name){ setStatus('Roll or name missing', 'danger'); logDebug('Missing roll/name'); return; }
+  const payload = { roll, name, image_base64:lastImageBase64, audio_base64:lastAudioBase64 };
+  await postTo(ENROLL_URL, payload);
+});
+
+document.getElementById('btnSendEnroll').addEventListener('click', async ()=>{
+  if(!lastImageBase64) { setStatus('No captured image - press Preview Capture', 'danger'); return; }
+  const roll = document.getElementById('inputRoll').value.trim();
+  const name = document.getElementById('inputName').value.trim();
+  if(!roll || !name){ setStatus('Roll or name missing', 'danger'); return; }
+  const payload = { roll, name, image_base64:lastImageBase64, audio_base64:lastAudioBase64 };
+  await postTo(ENROLL_URL, payload);
+});
+
+document.getElementById('btnSendAttend').addEventListener('click', async ()=>{
+  if(!lastImageBase64) { setStatus('No captured image - press Preview Capture', 'danger'); return; }
+  const roll = document.getElementById('inputRoll').value.trim();
+  const name = document.getElementById('inputName').value.trim();
+  if(!roll || !name){ setStatus('Roll or name missing', 'danger'); return; }
+  const payload = { roll, name, image_base64:lastImageBase64, audio_base64:lastAudioBase64 };
+  await postTo(ATTEND_URL, payload);
+});
+
+document.getElementById('btnClear').addEventListener('click', ()=>{
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  lastImageBase64 = null;
+  setStatus('Preview cleared');
+  updateDebugPanel();
+});
+
+document.getElementById('btnRecord').addEventListener('click', () => {
+  startRecording(2000); // 2 seconds
+});
+
+document.getElementById('btnStopRec').addEventListener('click', () => {
+  stopRecordingImmediate();
+});
+
+/* Debug toggles and copy */
+document.getElementById('btnShowBase').addEventListener('click', () => {
+  showFullBase64 = !showFullBase64;
+  document.getElementById('btnShowBase').textContent = showFullBase64 ? 'Hide full base64' : 'Toggle Base64 (truncated)';
+  updateDebugPanel();
+});
+document.getElementById('btnCopy').addEventListener('click', async ()=>{
+  const roll = document.getElementById('inputRoll').value.trim();
+  const name = document.getElementById('inputName').value.trim();
+  const payload = { roll, name, image_base64:lastImageBase64, audio_base64:lastAudioBase64 };
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(payload));
+    setStatus('JSON copied to clipboard', 'success');
+  } catch (e){
+    setStatus('Copy failed: ' + e.message, 'danger');
+  }
+});
+
+/* Update debug display */
+function updateDebugPanel(){
+  const roll = document.getElementById('inputRoll').value.trim();
+  const name = document.getElementById('inputName').value.trim();
+  let txt = `roll: ${roll}\nname: ${name}\n\n`;
+  if(lastImageBase64){
+    txt += `image_base64: (${lastImageBase64.length} chars)\n`;
+    txt += showFullBase64 ? lastImageBase64 + '\n\n' : lastImageBase64.slice(0,200) + '... (truncated)\n\n';
+  } else txt += 'image_base64: (none)\n\n';
+  if(lastAudioBase64){
+    txt += `audio_base64: (${lastAudioBase64.length} chars)\n`;
+    txt += showFullBase64 ? lastAudioBase64 + '\n\n' : lastAudioBase64.slice(0,200) + '... (truncated)\n\n';
+  } else txt += 'audio_base64: (none)\n\n';
+  debugPanel.textContent = txt;
+}
+
+/* Auto-init small helpful hints */
+(function init(){
+  debugPanel.textContent = "Debug log — use buttons to start camera or record audio.\n";
+  setStatus('Ready');
+})();
+
+</script>
+</body>
+</html>
