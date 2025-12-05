@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Smart Face & Voice — Capture</title>
+<style>
+    body { font-family: Arial, sans-serif; background:#081b33; color:white; margin:0; padding:20px; }
+    .container { display:flex; gap:20px; }
+    .panel { background:#0d2747; padding:20px; border-radius:10px; width:50%; }
+    button { padding:10px 15px; margin:5px; border:none; border-radius:5px; cursor:pointer; }
+    video, img { width:100%; border-radius:10px; }
+    textarea { width:100%; height:200px; background:black; color:#00ff9d; padding:10px; margin-top:10px; }
+</style>
+</head>
+
+<body>
+
+<h1>Smart Face & Voice — Capture</h1>
+
+<div class="container">
+<div class="panel">
+
+<h3>Camera preview</h3>
+<video id="cam" autoplay playsinline></video>
+
+<button id="btnStartCam">Start Camera</button>
+<button id="btnStopCam">Stop Camera</button>
+<button id="btnPreview">Preview Capture</button>
+<button id="btnCaptureEnroll">Capture & Enroll</button>
+<button id="btnCaptureAttend">Capture & Attend</button>
+
+<h3>Audio recorder</h3>
+<button id="btnRecord">Record 2s</button>
+<button id="btnStopRecord">Stop</button>
+<audio id="audPlayer" controls></audio>
+
+<h3>Captured Image Preview</h3>
+<img id="imgPreview"/>
+
+</div>
+
+<div class="panel">
+<h3>Inputs & Debug</h3>
+
+<label>Student Roll</label>
+<input id="inputRoll" style="width:100%; padding:5px;"><br><br>
+
+<label>Student Name</label>
+<input id="inputName" style="width:100%; padding:5px;">
+
+<button id="toggle64">Toggle Base64 (truncated)</button>
+<button id="copyJSON">Copy JSON</button>
+
+<textarea id="debugBox"></textarea>
+
+<h4>Endpoints:</h4>
+<p>Enroll → https://vishnuteja1494.app.n8n.cloud/webhook/enroll</p>
+<p>Attend → https://vishnuteja1494.app.n8n.cloud/webhook/attend</p>
+
+</div>
+</div>
+
+<script>
+/* -------------------------------------------------------------------------- */
+/* URLs (PRODUCTION) */
+/* -------------------------------------------------------------------------- */
+const ENROLL_URL = "https://vishnuteja1494.app.n8n.cloud/webhook/enroll";
+const ATTEND_URL = "https://vishnuteja1494.app.n8n.cloud/webhook/attend";
+
+/* -------------------------------------------------------------------------- */
+/* CAMERA */
+/* -------------------------------------------------------------------------- */
+let video = document.getElementById("cam");
+let stream = null;
+let lastImageBase64 = null;
+
+async function startCamera() {
+    stream = await navigator.mediaDevices.getUserMedia({ video:true });
+    video.srcObject = stream;
+}
+function stopCamera() {
+    if(stream) stream.getTracks().forEach(t => t.stop());
+    video.srcObject = null;
+}
+
+async function captureImage() {
+    let canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    let ctx = canvas.getContext("2d");
+    ctx.drawImage(video, 0, 0);
+    lastImageBase64 = canvas.toDataURL("image/jpeg").replace("data:image/jpeg;base64,","");
+    document.getElementById("imgPreview").src = "data:image/jpeg;base64," + lastImageBase64;
+    log("Captured image (" + lastImageBase64.length + " chars)");
+}
+
+/* -------------------------------------------------------------------------- */
+/* AUDIO */
+/* -------------------------------------------------------------------------- */
+let mediaRecorder;
+let audioChunks = [];
+let lastAudioBase64 = null;
+
+async function recordAudio() {
+    let audioStream = await navigator.mediaDevices.getUserMedia({ audio:true });
+    mediaRecorder = new MediaRecorder(audioStream);
+    mediaRecorder.start();
+
+    audioChunks = [];
+
+    mediaRecorder.ondataavailable = (e)=> audioChunks.push(e.data);
+    mediaRecorder.onstop = async ()=>{
+        let blob = new Blob(audioChunks, {type:"audio/webm"});
+        let reader = new FileReader();
+        reader.onloadend = ()=>{
+            lastAudioBase64 = reader.result.replace("data:audio/webm;base64,","");
+            document.getElementById("audPlayer").src = "data:audio/webm;base64,"+lastAudioBase64;
+            log("Captured audio (" + lastAudioBase64.length + " chars)");
+        };
+        reader.readAsDataURL(blob);
+    };
+
+    setTimeout(()=> mediaRecorder.stop(), 2000);
+}
+
+/* -------------------------------------------------------------------------- */
+/* NETWORK */
+/* -------------------------------------------------------------------------- */
+async function postTo(url, payload) {
+    log("POST → " + url);
+    log(JSON.stringify(payload, null, 2));
+
+    try {
+        let res = await fetch(url, {
+            method:"POST",
+            headers:{ "Content-Type":"application/json" },
+            body: JSON.stringify(payload)
+        });
+        let text = await res.text();
+        log("Response:\n" + text);
+    } catch(err) {
+        log("ERROR: " + err);
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/* ACTION BUTTONS */
+/* -------------------------------------------------------------------------- */
+async function captureAndEnroll() {
+    let roll = document.getElementById("inputRoll").value.trim();
+    let name = document.getElementById("inputName").value.trim();
+
+    if(!roll || !name) return alert("Enter roll & name first!");
+    if(!lastImageBase64) await captureImage();
+    if(!lastAudioBase64) await recordAudio();
+
+    let payload = {
+        roll,
+        name,
+        image_base64: lastImageBase64,
+        audio_base64: lastAudioBase64
+    };
+
+    await postTo(ENROLL_URL, payload);
+}
+
+async function captureAndAttend() {
+    let roll = document.getElementById("inputRoll").value.trim();
+    let name = document.getElementById("inputName").value.trim();
+
+    if(!roll || !name) return alert("Enter roll & name first!");
+    if(!lastImageBase64) await captureImage();
+    if(!lastAudioBase64) await recordAudio();
+
+    let payload = {
+        roll,
+        name,
+        image_base64: lastImageBase64,
+        audio_base64: lastAudioBase64
+    };
+
+    await postTo(ATTEND_URL, payload);
+}
+
+/* -------------------------------------------------------------------------- */
+/* DEBUG PANEL */
+/* -------------------------------------------------------------------------- */
+let debugBox = document.getElementById("debugBox");
+
+function log(msg){
+    debugBox.value += "["+new Date().toLocaleTimeString()+"] " + msg + "\n\n";
+    debugBox.scrollTop = debugBox.scrollHeight;
+}
+
+/* -------------------------------------------------------------------------- */
+/* BUTTON HOOKS */
+/* -------------------------------------------------------------------------- */
+document.getElementById("btnStartCam").onclick = startCamera;
+document.getElementById("btnStopCam").onclick = stopCamera;
+document.getElementById("btnPreview").onclick = captureImage;
+document.getElementById("btnRecord").onclick = recordAudio;
+document.getElementById("btnCaptureEnroll").onclick = captureAndEnroll;
+document.getElementById("btnCaptureAttend").onclick = captureAndAttend;
+
+document.getElementById("copyJSON").onclick = () => {
+    navigator.clipboard.writeText(debugBox.value);
+    alert("Copied!");
+};
+
+</script>
+</body>
+</html>
